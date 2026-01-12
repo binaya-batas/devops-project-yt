@@ -1,0 +1,147 @@
+@Library('Shared') _
+pipeline {
+    agent any
+    
+    environment{
+        SONAR_HOME = tool "Sonar"
+        NVD_API_KEY = credentials('NVD_API_KEY')
+    }
+    
+    parameters {
+        string(name: 'FRONTEND_DOCKER_TAG', defaultValue: '', description: 'Setting docker image for latest push')
+        string(name: 'BACKEND_DOCKER_TAG', defaultValue: '', description: 'Setting docker image for latest push')
+    }
+    
+    stages {
+        stage("Validate Parameters") {
+            steps {
+                script {
+                    if (params.FRONTEND_DOCKER_TAG == '' || params.BACKEND_DOCKER_TAG == '') {
+                        error("FRONTEND_DOCKER_TAG and BACKEND_DOCKER_TAG must be provided.")
+                    }
+                }
+            }
+        }
+        stage("Workspace cleanup"){
+            steps{
+                script{
+                    cleanWs()
+                }
+            }
+        }
+        
+        stage('Git: Code Checkout') {
+            steps {
+                script{
+                    clone("https://github.com/sayantann7/DevOps-Mega-Project.git","main")
+                }
+            }
+        }
+        
+        stage("Trivy: Filesystem scan"){
+            steps{
+                script{
+                    trivy_scan()
+                }
+            }
+        }
+
+        stage("OWASP: Dependency check"){
+            steps{
+                script{
+                    dependencyCheck additionalArguments: '''
+                        --scan ./
+                        --format XML
+                        --format HTML
+                        --nvdApiKey ${NVD_API_KEY}
+                    ''', odcInstallation: 'OWASP'
+                    dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+                }
+            }
+        }
+        
+        stage("SonarQube: Code Analysis"){
+            steps{
+                script{
+                    withSonarQubeEnv("Sonar"){
+                        sh '''
+                            ${SONAR_HOME}/bin/sonar-scanner \
+                            -Dsonar.projectName=wanderlust \
+                            -Dsonar.projectKey=wanderlust \
+                            -Dsonar.sources=.
+                        '''
+                    }
+                }
+            }
+        }
+        
+        stage("SonarQube: Code Quality Gates"){
+            steps{
+                script{
+                    timeout(time: 1, unit: 'MINUTES') {
+                        waitForQualityGate abortPipeline: false
+                    }
+                }
+            }
+        }
+        
+        stage('Exporting environment variables') {
+            parallel{
+                stage("Backend env setup"){
+                    steps {
+                        script{
+                            dir("Automations"){
+                                sh "bash updatebackendnew.sh"
+                            }
+                        }
+                    }
+                }
+                
+                stage("Frontend env setup"){
+                    steps {
+                        script{
+                            dir("Automations"){
+                                sh "bash updatefrontendnew.sh"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage("Docker: Build Images"){
+            steps{
+                script{
+                    dir('backend'){
+                        sh "docker build -t sayantannandi/wanderlust-backend-beta:${params.BACKEND_DOCKER_TAG} ."
+                    }
+                    
+                    dir('frontend'){
+                        sh "docker build -t sayantannandi/wanderlust-frontend-beta:${params.FRONTEND_DOCKER_TAG} ."
+                    }
+                }
+            }
+        }
+        
+        stage("Docker: Push to DockerHub"){
+            steps{
+                script{
+                    withCredentials([usernamePassword(credentialsId: 'docker', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                        sh "echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin"
+                        sh "docker push sayantannandi/wanderlust-backend-beta:${params.BACKEND_DOCKER_TAG}"
+                        sh "docker push sayantannandi/wanderlust-frontend-beta:${params.FRONTEND_DOCKER_TAG}"
+                    }
+                }
+            }
+        }
+    }
+    post{
+        success{
+            archiveArtifacts artifacts: '*.xml', followSymlinks: false
+            build job: "Wanderlust-CD", parameters: [
+                string(name: 'FRONTEND_DOCKER_TAG', value: "${params.FRONTEND_DOCKER_TAG}"),
+                string(name: 'BACKEND_DOCKER_TAG', value: "${params.BACKEND_DOCKER_TAG}")
+            ]
+        }
+    }
+}
