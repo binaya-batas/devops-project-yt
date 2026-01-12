@@ -19,7 +19,7 @@ pipeline {
         stage('Git: Code Checkout') {
             steps {
                 script{
-                    clone("https://github.com/sayantann7/DevOps-Mega-Project.git","main")
+                    clone("https://github.com/sayantann7/devops-project-yt.git","main")
                 }
             }
         }
@@ -68,7 +68,7 @@ pipeline {
                         git commit -m "Updated environment variables"
                         
                         echo "Pushing changes to github: "
-                        git push https://github.com/sayantann7/DevOps-Mega-Project.git main
+                        git push https://github.com/sayantann7/devops-project-yt.git main
                     '''
                     }
                 }
